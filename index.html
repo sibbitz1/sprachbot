@@ -107,17 +107,7 @@ button:active{transform:scale(.94)}
   <div id="sheet">
     <h2>Einstellungen</h2>
 
-    <div class="row">
-      <label>Modell</label>
-      <select id="modelSel">
-        <option value="openai">openai (ausgewogen)</option>
-        <option value="mistral">mistral (schnell)</option>
-        <option value="llama">llama</option>
-        <option value="searchgpt">searchgpt (Web-Suche)</option>
-      </select>
-    </div>
-
-    <div class="sw"><span>Internet-Zugriff (Live-Suche)</span><input type="checkbox" id="netSw"></div>
+    <div class="sw"><span>Internet-Zugriff (Web-Recherche)</span><input type="checkbox" id="netSw"></div>
     <div class="sw"><span>Antworten vorlesen</span><input type="checkbox" id="ttsSw" checked></div>
     <div class="sw"><span>Gesprächsmodus (Mic danach wieder an)</span><input type="checkbox" id="loopSw"></div>
 
@@ -154,79 +144,57 @@ button:active{transform:scale(.94)}
 <script>
 "use strict";
 
-/* ---------- Konstanten ---------- */
-const API_POST = "https://text.pollinations.ai/openai";
-const API_GET  = "https://text.pollinations.ai/";
-const LS = "sprachbot.v1";
-const MAX_HISTORY = 16;
+const API = "https://text.pollinations.ai/";
+const MODEL = "openai-fast";
+const LS = "sprachbot.v2";
+const MAX_HISTORY = 6;
 
-/* ---------- State ---------- */
 const state = {
   history: [],
-  model: "openai",
   net: false,
   tts: true,
   loop: false,
   rate: 1,
   lang: "de-DE",
   voice: "",
-  sys: "Du bist ein freundlicher, kompetenter Sprachassistent. Antworte kurz, klar und auf den Punkt, damit man dir gut zuhören kann. Keine Aufzählungen mit Sonderzeichen.",
+  sys: "Du bist ein freundlicher, kompetenter Sprachassistent. Antworte kurz, klar und auf den Punkt, damit man dir gut zuhören kann. Keine Sonderzeichen-Listen.",
   busy: false
 };
 
 const $ = id => document.getElementById(id);
 const chat = $("chat"), input = $("input"), sendBtn = $("send"), micBtn = $("mic");
 
-/* ---------- Persistenz ---------- */
-function save(){
-  try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){}
-}
-function load(){
-  try{
-    const raw = localStorage.getItem(LS);
-    if(raw) Object.assign(state, JSON.parse(raw));
-  }catch(e){}
-}
+function save(){ try{ localStorage.setItem(LS, JSON.stringify(state)); }catch(e){} }
+function load(){ try{ const r = localStorage.getItem(LS); if(r) Object.assign(state, JSON.parse(r)); }catch(e){} }
 load();
 
-/* ---------- UI-Helfer ---------- */
 function addMsg(text, who){
   const d = document.createElement("div");
   d.className = "msg " + who;
-  if(who === "bot"){
-    d.innerHTML = md(text);
-  } else {
-    d.textContent = text;
-  }
+  if(who === "bot") d.innerHTML = md(text); else d.textContent = text;
   chat.appendChild(d);
   chat.scrollTop = chat.scrollHeight;
   return d;
 }
 function md(t){
-  return t
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .replace(/```([\s\S]*?)```/g,(m,c)=>'<code>'+c+'</code>')
     .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
     .replace(/`([^`]+)`/g,"<code>$1</code>");
 }
 function plain(t){
-  return t.replace(/```[\s\S]*?```/g," ")
-          .replace(/[*_`#>]/g,"")
-          .replace(/\[(.*?)\]\(.*?\)/g,"$1")
-          .replace(/\s+/g," ").trim();
+  return t.replace(/```[\s\S]*?```/g," ").replace(/[*_`#>]/g,"")
+    .replace(/\[(.*?)\]\(.*?\)/g,"$1").replace(/\s+/g," ").trim();
 }
 
-/* ---------- Sprachausgabe ---------- */
-let unlocked = false;
+/* --- Sprachausgabe --- */
 function speak(text){
-  if(!state.tts || !text.trim()) { onSpeakEnd(); return; }
-  const u = new SpeechSynthesisUtterance(plain(text).slice(0, 900));
-  u.lang = state.lang;
-  u.rate = state.rate;
+  if(!state.tts || !text.trim()){ onSpeakEnd(); return; }
+  const u = new SpeechSynthesisUtterance(plain(text).slice(0,900));
+  u.lang = state.lang; u.rate = state.rate;
   const v = speechSynthesis.getVoices().find(x => x.name === state.voice);
   if(v) u.voice = v;
-  u.onend = onSpeakEnd;
-  u.onerror = onSpeakEnd;
+  u.onend = onSpeakEnd; u.onerror = onSpeakEnd;
   speechSynthesis.cancel();
   speechSynthesis.speak(u);
 }
@@ -234,12 +202,12 @@ function onSpeakEnd(){
   if(state.loop && !state.busy) setTimeout(() => { if(!recActive) startRec(); }, 350);
 }
 
-/* ---------- Spracherkennung ---------- */
+/* --- Spracherkennung --- */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, recActive = false;
 
 function startRec(){
-  if(!SR){ addMsg("Spracherkennung wird von diesem Browser nicht unterstützt. Tippe stattdessen.", "sys"); return; }
+  if(!SR){ addMsg("Spracherkennung wird hier nicht unterstützt. Tippe stattdessen.", "sys"); return; }
   if(recActive) return;
   speechSynthesis.cancel();
   rec = new SR();
@@ -249,19 +217,15 @@ function startRec(){
   rec.onstart = () => { recActive = true; micBtn.classList.add("rec"); };
   rec.onerror = e => {
     recActive = false; micBtn.classList.remove("rec");
-    if(e.error === "not-allowed") addMsg("Mikrofon-Zugriff verweigert. In den Einstellungen erlauben.", "sys");
+    if(e.error === "not-allowed") addMsg("Mikrofon verweigert. In den Website-Einstellungen erlauben.", "sys");
   };
   rec.onend = () => { recActive = false; micBtn.classList.remove("rec"); };
   rec.onresult = ev => {
     let txt = "";
-    for(let i = ev.resultIndex; i < ev.results.length; i++){
-      txt += ev.results[i][0].transcript;
-    }
-    input.value = txt.trim();
-    autosize();
+    for(let i = ev.resultIndex; i < ev.results.length; i++) txt += ev.results[i][0].transcript;
+    input.value = txt.trim(); autosize();
     if(ev.results[ev.results.length - 1].isFinal){
-      recActive = false;
-      micBtn.classList.remove("rec");
+      recActive = false; micBtn.classList.remove("rec");
       const t = input.value.trim();
       if(t) send(t);
     }
@@ -273,61 +237,41 @@ function stopRec(){
   recActive = false; micBtn.classList.remove("rec");
 }
 
-/* ---------- API ---------- */
-function activeModel(){
-  if(state.net) return "searchgpt";
-  return state.model;
-}
-function buildMessages(){
-  const sys = state.sys + (state.net
-    ? "\n\nNutze aktiv aktuelle Websuche-Ergebnisse und nenne kurz die Quellen."
-    : "");
-  const msgs = [{ role: "system", content: sys }];
-  const hist = state.history.slice(-MAX_HISTORY);
-  for(const m of hist) msgs.push(m);
-  return msgs;
-}
-
-async function streamChat(msgs, onDelta){
-  const res = await fetch(API_POST, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: activeModel(), messages: msgs, stream: true })
-  });
-  if(!res.ok || !res.body) throw new Error("HTTP " + res.status);
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  while(true){
-    const { done, value } = await reader.read();
-    if(done) break;
-    buf += dec.decode(value, { stream: true });
-    const chunks = buf.split("\n\n");
-    buf = chunks.pop();
-    for(const c of chunks){
-      for(const line of c.split("\n")){
-        if(!line.startsWith("data:")) continue;
-        const d = line.slice(5).trim();
-        if(!d || d === "[DONE]") continue;
-        try{
-          const j = JSON.parse(d);
-          const t = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
-          if(t) onDelta(t);
-        }catch(e){}
-      }
+/* --- Web-Recherche (Wikipedia, CORS-frei) --- */
+async function webSearch(q){
+  const out = [];
+  try{
+    const r = await fetch("https://de.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
+      encodeURIComponent(q) + "&format=json&srlimit=3&origin=*");
+    if(!r.ok) return "";
+    const j = await r.json();
+    const hits = (j.query && j.query.search || []).map(h => h.title);
+    for(const t of hits.slice(0,2)){
+      try{
+        const rr = await fetch("https://de.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(t));
+        if(!rr.ok) continue;
+        const jj = await rr.json();
+        if(jj.extract) out.push("• " + jj.title + ": " + jj.extract);
+      }catch(e){}
     }
-  }
+  }catch(e){}
+  return out.join("\n");
 }
 
-async function simpleChat(msgs){
-  const prompt = msgs.map(m => (m.role === "assistant" ? "Assistent: " : m.role === "system" ? "" : "User: ") + m.content).join("\n\n");
-  const url = API_GET + encodeURIComponent(prompt) + "?model=" + encodeURIComponent(activeModel());
-  const res = await fetch(url);
+/* --- Anfrage --- */
+async function ask(sys, prompt){
+  const params = new URLSearchParams();
+  if(sys) params.set("system", sys);
+  params.set("model", MODEL);
+  const res = await fetch(API + encodeURIComponent(prompt) + "?" + params.toString());
+  if(res.status === 402){
+    const ra = res.headers.get("Retry-After");
+    throw new Error("Anfrage-Limit erreicht. Bitte " + (ra ? ra + " Sekunden" : "etwa 30 Sekunden") + " warten.");
+  }
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.text();
 }
 
-/* ---------- Senden ---------- */
 async function send(text){
   if(state.busy) return;
   text = text.trim();
@@ -335,47 +279,49 @@ async function send(text){
 
   state.busy = true;
   sendBtn.disabled = true;
-  input.value = "";
-  autosize();
+  input.value = ""; autosize();
   stopRec();
   speechSynthesis.cancel();
 
   addMsg(text, "me");
   state.history.push({ role: "user", content: text });
 
-  const bubble = addMsg("", "bot");
+  const bubble = addMsg("…", "bot");
+  let sys = state.sys;
   let full = "";
 
   try{
-    const msgs = buildMessages();
-    try{
-      await streamChat(msgs, t => {
-        full += t;
-        bubble.innerHTML = md(full);
-        chat.scrollTop = chat.scrollHeight;
-      });
-    }catch(err){
-      full = await simpleChat(msgs);
-      bubble.innerHTML = md(full);
+    if(state.net){
+      bubble.innerHTML = "<em>suche im Web …</em>";
+      const info = await webSearch(text);
+      if(info){
+        sys += "\n\nAktuelle Web-Infos (nutze sie, wenn passend):\n" + info;
+      }
     }
+
+    let prompt = state.history.slice(-MAX_HISTORY)
+      .map(m => (m.role === "assistant" ? "Assistent: " : "Ich: ") + m.content)
+      .join("\n\n");
+    if(prompt.length > 4000) prompt = prompt.slice(-4000);
+    prompt += "\n\nAssistent:";
+
+    full = (await ask(sys, prompt)).trim();
+    if(!full) full = "(keine Antwort)";
   }catch(err){
-    full = "Fehler: " + err.message + " — Verbindung prüfen.";
-    bubble.innerHTML = md(full);
+    full = "Fehler: " + err.message;
   }
 
-  if(!full.trim()){
-    full = "(keine Antwort)";
-    bubble.innerHTML = md(full);
-  }
+  bubble.innerHTML = md(full);
+  chat.scrollTop = chat.scrollHeight;
 
-  state.history.push({ role: "assistant", content: full });
+  if(!full.startsWith("Fehler:")) state.history.push({ role: "assistant", content: full });
   state.busy = false;
   sendBtn.disabled = !input.value.trim();
   save();
   speak(full);
 }
 
-/* ---------- Events ---------- */
+/* --- Events --- */
 function autosize(){
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 130) + "px";
@@ -386,14 +332,10 @@ input.addEventListener("keydown", e => {
   if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(input.value); }
 });
 sendBtn.addEventListener("click", () => send(input.value));
-micBtn.addEventListener("click", () => {
-  if(recActive){ stopRec(); }
-  else { unlocked = true; startRec(); }
-});
+micBtn.addEventListener("click", () => { if(recActive) stopRec(); else startRec(); });
 
-/* ---------- Einstellungen ---------- */
+/* --- Einstellungen --- */
 function openPanel(){
-  $("modelSel").value = state.model;
   $("netSw").checked = state.net;
   $("ttsSw").checked = state.tts;
   $("loopSw").checked = state.loop;
@@ -407,7 +349,6 @@ $("setBtn").addEventListener("click", openPanel);
 $("closeBtn").addEventListener("click", () => $("panel").classList.remove("open"));
 $("panel").addEventListener("click", e => { if(e.target.id === "panel") $("panel").classList.remove("open"); });
 
-$("modelSel").addEventListener("change", e => { state.model = e.target.value; save(); });
 $("netSw").addEventListener("change", e => { state.net = e.target.checked; save(); });
 $("ttsSw").addEventListener("change", e => { state.tts = e.target.checked; if(!state.tts) speechSynthesis.cancel(); save(); });
 $("loopSw").addEventListener("change", e => { state.loop = e.target.checked; save(); });
@@ -420,10 +361,8 @@ function fillVoices(){
   sel.innerHTML = "";
   const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith(state.lang.slice(0,2)));
   if(!voices.length){
-    const o = document.createElement("option");
-    o.value = ""; o.textContent = "Standard";
-    sel.appendChild(o);
-    return;
+    const o = document.createElement("option"); o.value = ""; o.textContent = "Standard";
+    sel.appendChild(o); return;
   }
   for(const v of voices){
     const o = document.createElement("option");
@@ -434,26 +373,21 @@ function fillVoices(){
   if(!state.voice) state.voice = voices[0].name;
 }
 $("voiceSel").addEventListener("change", e => { state.voice = e.target.value; save(); });
-if(speechSynthesis) speechSynthesis.onvoiceschanged = fillVoices;
+if(window.speechSynthesis) speechSynthesis.onvoiceschanged = fillVoices;
 fillVoices();
 
-/* ---------- Neuer Chat ---------- */
 $("newBtn").addEventListener("click", () => {
   if(state.busy) return;
   speechSynthesis.cancel();
-  state.history = [];
-  chat.innerHTML = "";
+  state.history = []; chat.innerHTML = "";
   addMsg("Neuer Chat gestartet.", "sys");
   save();
 });
 
-/* ---------- Start ---------- */
 if(state.history.length){
-  for(const m of state.history){
-    addMsg(m.content, m.role === "user" ? "me" : "bot");
-  }
+  for(const m of state.history) addMsg(m.content, m.role === "user" ? "me" : "bot");
 } else {
-  addMsg("Tippe auf 🎙 und sprich, oder schreibe unten. Internet-Zugriff und Stimme lassen sich über ⚙ einstellen.", "sys");
+  addMsg("Tippe auf 🎙 und sprich, oder schreibe unten. Web-Recherche und Stimme stellst du über ⚙ ein.", "sys");
 }
 autosize();
 </script>
