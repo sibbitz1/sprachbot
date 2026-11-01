@@ -28,6 +28,7 @@ header{
 }
 header h1{font-size:16px;font-weight:600;margin:0;flex:1;letter-spacing:.2px}
 header h1 span{color:var(--acc);}
+.tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:2px 6px;border-radius:6px}
 .iconbtn{
   width:38px;height:38px;border-radius:11px;border:1px solid var(--line);
   background:var(--bg2);color:var(--txt);font-size:17px;display:grid;place-items:center;
@@ -55,7 +56,7 @@ header h1 span{color:var(--acc);}
 #mic,#send{width:46px;height:46px;border-radius:14px;border:none;font-size:20px;display:grid;place-items:center;cursor:pointer;transition:.15s}
 #mic{background:var(--bg3);color:var(--txt)}
 #mic.rec{background:#e0453f;color:#fff;animation:pulse 1.2s infinite}
-@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,69,63,.6)}50%{box-shadow:0 0 0 12px rgba(224,69,63,0)}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,69,63,.6)}50%{box-shadow:0 0 0 12px rgba(224,69,63,.0)}}
 #send{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#fff}
 #send:disabled{opacity:.4}
 button:active{transform:scale(.94)}
@@ -91,6 +92,7 @@ button:active{transform:scale(.94)}
 
 <header>
   <h1>Sprach<span>bot</span></h1>
+  <span class="tag">v3</span>
   <button class="iconbtn" id="newBtn" title="Neu">＋</button>
   <button class="iconbtn" id="setBtn" title="Einstellungen">⚙</button>
 </header>
@@ -144,9 +146,8 @@ button:active{transform:scale(.94)}
 <script>
 "use strict";
 
-const API = "https://text.pollinations.ai/";
-const MODEL = "openai-fast";
-const LS = "sprachbot.v2";
+const HOST = "https://text.pollinations.ai/";
+const LS = "sprachbot.v3";
 const MAX_HISTORY = 6;
 
 const state = {
@@ -237,7 +238,7 @@ function stopRec(){
   recActive = false; micBtn.classList.remove("rec");
 }
 
-/* --- Web-Recherche (Wikipedia, CORS-frei) --- */
+/* --- Web-Recherche --- */
 async function webSearch(q){
   const out = [];
   try{
@@ -258,18 +259,45 @@ async function webSearch(q){
   return out.join("\n");
 }
 
-/* --- Anfrage --- */
-async function ask(sys, prompt){
-  const params = new URLSearchParams();
-  if(sys) params.set("system", sys);
-  params.set("model", MODEL);
-  const res = await fetch(API + encodeURIComponent(prompt) + "?" + params.toString());
-  if(res.status === 402){
+/* --- Anfrage mit Ausweichrouten --- */
+function checkStatus(res){
+  if(res.status === 402 || res.status === 429){
     const ra = res.headers.get("Retry-After");
-    throw new Error("Anfrage-Limit erreicht. Bitte " + (ra ? ra + " Sekunden" : "etwa 30 Sekunden") + " warten.");
+    throw new Error("LIMIT:" + (ra || "30"));
   }
   if(!res.ok) throw new Error("HTTP " + res.status);
-  return await res.text();
+}
+
+async function ask(sys, prompt, msgs){
+  let lastErr = null;
+
+  // 1) einfacher GET, nur System-Prompt
+  try{
+    const res = await fetch(HOST + encodeURIComponent(prompt) + "?system=" + encodeURIComponent(sys));
+    checkStatus(res);
+    return await res.text();
+  }catch(e){ lastErr = e; if(String(e.message).startsWith("LIMIT")) throw e; }
+
+  // 2) GET ganz ohne Parameter
+  try{
+    const res = await fetch(HOST + encodeURIComponent(prompt));
+    checkStatus(res);
+    return await res.text();
+  }catch(e){ lastErr = e; if(String(e.message).startsWith("LIMIT")) throw e; }
+
+  // 3) OpenAI-kompatibler POST
+  try{
+    const res = await fetch(HOST + "openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "system", content: sys }].concat(msgs) })
+    });
+    checkStatus(res);
+    const j = await res.json();
+    return (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || "";
+  }catch(e){ lastErr = e; }
+
+  throw lastErr || new Error("unbekannt");
 }
 
 async function send(text){
@@ -294,27 +322,33 @@ async function send(text){
     if(state.net){
       bubble.innerHTML = "<em>suche im Web …</em>";
       const info = await webSearch(text);
-      if(info){
-        sys += "\n\nAktuelle Web-Infos (nutze sie, wenn passend):\n" + info;
-      }
+      if(info) sys += "\n\nAktuelle Web-Infos (nutze sie, wenn passend):\n" + info;
     }
 
-    let prompt = state.history.slice(-MAX_HISTORY)
-      .map(m => (m.role === "assistant" ? "Assistent: " : "Ich: ") + m.content)
-      .join("\n\n");
-    if(prompt.length > 4000) prompt = prompt.slice(-4000);
+    const hist = state.history.slice(-MAX_HISTORY);
+    let prompt = hist.map(m => (m.role === "assistant" ? "Assistent: " : "Ich: ") + m.content).join("\n\n");
+    if(prompt.length > 3500) prompt = prompt.slice(-3500);
     prompt += "\n\nAssistent:";
 
-    full = (await ask(sys, prompt)).trim();
+    full = (await ask(sys, prompt, hist)).trim();
     if(!full) full = "(keine Antwort)";
   }catch(err){
-    full = "Fehler: " + err.message;
+    const msg = String(err.message);
+    if(msg.startsWith("LIMIT:")){
+      full = "Limit erreicht. Bitte " + msg.split(":")[1] + " Sekunden warten und nochmal senden.";
+    } else if(msg.indexOf("Load failed") > -1 || msg.indexOf("fetch") > -1){
+      full = "Keine Verbindung zur Schnittstelle. Internet prüfen und neu laden.";
+    } else {
+      full = "Fehler: " + msg;
+    }
   }
 
   bubble.innerHTML = md(full);
   chat.scrollTop = chat.scrollHeight;
 
-  if(!full.startsWith("Fehler:")) state.history.push({ role: "assistant", content: full });
+  if(!/^Fehler:|^Limit erreicht|^Keine Verbindung/.test(full)){
+    state.history.push({ role: "assistant", content: full });
+  }
   state.busy = false;
   sendBtn.disabled = !input.value.trim();
   save();
